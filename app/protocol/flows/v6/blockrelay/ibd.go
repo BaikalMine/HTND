@@ -151,11 +151,6 @@ func (flow *handleIBDFlow) runIBDIfNotRunning(block *externalapi.DomainBlock) er
 			log.Errorf("Failed to initialize staging consensus: %s", err)
 			return err
 		}
-		err = flow.Domain().SyncStagingConsensus()
-		if err != nil {
-			log.Errorf("Failed to sync staging consensus: %s", err)
-			return err
-		}
 		flow.usingStagingConsensus = true
 		log.Infof("Staging consensus initialized successfully")
 
@@ -174,6 +169,10 @@ func (flow *handleIBDFlow) runIBDIfNotRunning(block *externalapi.DomainBlock) er
 
 		// Use staging consensus for reversible IBD
 		consensusToUse := flow.Domain().StagingConsensus()
+		err = flow.ensureAnchorHeadersExist(consensusToUse, highestKnownSyncerChainHash)
+		if err != nil {
+			log.Warnf("Failed to backfill anchor headers into staging consensus: %s", err)
+		}
 		err = flow.syncPruningPointFutureHeaders(
 			consensusToUse,
 			syncerHeaderSelectedTipHash, highestKnownSyncerChainHash, relayBlockHash, block.Header.DAAScore())
@@ -617,6 +616,62 @@ func (flow *handleIBDFlow) processHeader(consensus externalapi.Consensus, msgBlo
 			log.Infof("Rejected block header %s from %s during IBD: %s", blockHash, flow.peer, err)
 			return protocolerrors.Wrapf(true, err, "got invalid block header %s during IBD", blockHash)
 		}
+	}
+
+	return nil
+}
+
+func (flow *handleIBDFlow) ensureAnchorHeadersExist(consensus externalapi.Consensus, anchor *externalapi.DomainHash) error {
+	if anchor == nil {
+		return nil
+	}
+	visited := make(map[externalapi.DomainHash]struct{})
+	return flow.ensureHeaderExistsRecursive(consensus, anchor, visited)
+}
+
+func (flow *handleIBDFlow) ensureHeaderExistsRecursive(consensus externalapi.Consensus,
+	blockHash *externalapi.DomainHash, visited map[externalapi.DomainHash]struct{}) error {
+
+	if _, ok := visited[*blockHash]; ok {
+		return nil
+	}
+	visited[*blockHash] = struct{}{}
+
+	blockInfo, err := consensus.GetBlockInfo(blockHash)
+	if err != nil {
+		return err
+	}
+	if blockInfo.Exists {
+		return nil
+	}
+
+	header, err := flow.Domain().Consensus().GetBlockHeader(blockHash)
+	if err != nil {
+		return err
+	}
+
+	for _, parent := range header.DirectParents() {
+		err = flow.ensureHeaderExistsRecursive(consensus, parent, visited)
+		if err != nil {
+			if errors.Is(err, ruleerrors.ErrPrunedBlock) {
+				return err
+			}
+			return err
+		}
+	}
+
+	block := &externalapi.DomainBlock{
+		Header:       header,
+		Transactions: nil,
+		PoWHash:      "",
+	}
+
+	err = consensus.ValidateAndInsertBlock(block, false, true)
+	if err != nil {
+		if errors.Is(err, ruleerrors.ErrDuplicateBlock) {
+			return nil
+		}
+		return err
 	}
 
 	return nil

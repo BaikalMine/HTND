@@ -39,10 +39,6 @@ func (d fakeDomain) InitStagingConsensusWithoutGenesis() error {
 	panic("implement me")
 }
 
-func (d fakeDomain) SyncStagingConsensus() error {
-	panic("implement me")
-}
-
 func (d fakeDomain) CommitStagingConsensus() error {
 	panic("implement me")
 }
