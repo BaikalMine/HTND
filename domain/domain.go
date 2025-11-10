@@ -23,6 +23,7 @@ type Domain interface {
 	Consensus() externalapi.Consensus
 	StagingConsensus() externalapi.Consensus
 	InitStagingConsensusWithoutGenesis() error
+	SyncStagingConsensus() error
 	CommitStagingConsensus() error
 	DeleteStagingConsensus() error
 	ConsensusEventsChannel() chan externalapi.ConsensusEvent
@@ -77,6 +78,18 @@ func (d *domain) InitStagingConsensusWithoutGenesis() error {
 	cfg := *d.consensusConfig
 	cfg.SkipAddingGenesis = true
 	return d.initStagingConsensus(&cfg)
+}
+
+func (d *domain) SyncStagingConsensus() error {
+	d.stagingConsensusLock.RLock()
+	if d.stagingConsensus == nil {
+		d.stagingConsensusLock.RUnlock()
+		return errors.Errorf("staging consensus is not initialized")
+	}
+	stagingConsensus := *d.stagingConsensus
+	d.stagingConsensusLock.RUnlock()
+
+	return syncConsensuses(d.Consensus(), stagingConsensus)
 }
 
 func (d *domain) initStagingConsensus(cfg *consensus.Config) error {

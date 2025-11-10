@@ -2,6 +2,7 @@ package blockrelay
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Hoosat-Oy/HTND/app/appmessage"
@@ -85,37 +86,49 @@ const (
 	banThresholdSecs = 300
 )
 
-var offenseTracker = make(map[string][]time.Time)
+var (
+	offenseTracker      = make(map[string][]time.Time)
+	offenseTrackerMutex sync.Mutex
+)
 
-func (flow *handleRelayInvsFlow) banConnection(offenseTimesOverrule bool) {
-	address := flow.netConnection.Address()
-	now := time.Now()
+func recordOffense(address string, now time.Time) int {
+	offenseTrackerMutex.Lock()
+	defer offenseTrackerMutex.Unlock()
 
-	// Track offenses
-	offenseTimes := offenseTracker[address]
-	offenseTimes = append(offenseTimes, now)
-
-	// Remove old offenses outside the threshold window
-	var recentOffenses []time.Time
+	offenseTimes := append(offenseTracker[address], now)
+	recentOffenses := offenseTimes[:0]
 	for _, t := range offenseTimes {
 		if now.Sub(t).Seconds() <= banThresholdSecs {
 			recentOffenses = append(recentOffenses, t)
 		}
 	}
 	offenseTracker[address] = recentOffenses
+	return len(recentOffenses)
+}
 
-	if len(recentOffenses) >= maxOffenses || offenseTimesOverrule {
+func clearRecordedOffenses(address string) {
+	offenseTrackerMutex.Lock()
+	defer offenseTrackerMutex.Unlock()
+	delete(offenseTracker, address)
+}
+
+func (flow *handleRelayInvsFlow) banConnection(offenseTimesOverrule bool) {
+	address := flow.netConnection.Address()
+	now := time.Now()
+
+	recentOffenseCount := recordOffense(address, now)
+	if offenseTimesOverrule || recentOffenseCount >= maxOffenses {
 		log.Infof("Banning connection: %s due to exceeding offense threshold", address)
 		_ = flow.connectionManager.Ban(flow.netConnection)
 		isBanned, _ := flow.connectionManager.IsBanned(flow.netConnection)
 		if isBanned {
 			log.Infof("Peer %s is banned. Disconnecting...", flow.netConnection.NetAddress().IP)
 			flow.netConnection.Disconnect()
-			delete(offenseTracker, address) // Clean up after ban
+			clearRecordedOffenses(address) // Clean up after ban
 			return
 		}
 	} else {
-		log.Infof("Peer %s offense recorded (%d/%d within threshold window)", address, len(recentOffenses), maxOffenses)
+		log.Infof("Peer %s offense recorded (%d/%d within threshold window)", address, recentOffenseCount, maxOffenses)
 	}
 }
 

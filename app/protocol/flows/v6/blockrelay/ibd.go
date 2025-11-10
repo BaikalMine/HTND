@@ -151,6 +151,11 @@ func (flow *handleIBDFlow) runIBDIfNotRunning(block *externalapi.DomainBlock) er
 			log.Errorf("Failed to initialize staging consensus: %s", err)
 			return err
 		}
+		err = flow.Domain().SyncStagingConsensus()
+		if err != nil {
+			log.Errorf("Failed to sync staging consensus: %s", err)
+			return err
+		}
 		flow.usingStagingConsensus = true
 		log.Infof("Staging consensus initialized successfully")
 
